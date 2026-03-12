@@ -1,6 +1,7 @@
 // =====================================================================
-// THU THẬP LÃI SUẤT TỰ ĐỘNG - 17 NGÂN HÀNG VIỆT NAM (v2)
-// Playwright + Chiến lược riêng cho từng ngân hàng
+// THU THẬP LÃI SUẤT TỰ ĐỘNG - TẤT CẢ NGÂN HÀNG (v3)
+// Nguồn: simplize.vn (trang tổng hợp lãi suất - 1 trang duy nhất)
+// Backup: website chính thức từng ngân hàng
 // =====================================================================
 
 import { chromium } from 'playwright';
@@ -17,373 +18,251 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// ============ HELPERS ============
-function parseRate(text) {
-  if (!text) return null;
-  const cleaned = text.replace(/%/g, '').replace(/,/g, '.').replace(/\s/g, '').replace(/\u00a0/g, '');
-  if (cleaned === '-' || cleaned === '' || cleaned === 'N/A' || cleaned === '—') return null;
-  const num = parseFloat(cleaned);
-  return (isNaN(num) || num <= 0 || num > 20) ? null : Math.round(num * 100) / 100;
-}
-
 function todayVN() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' });
 }
 
-function log(code, msg) {
+function log(msg) {
   const t = new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-  console.log(`[${t}] [${code}] ${msg}`);
+  console.log(`[${t}] ${msg}`);
 }
 
 const VALID_TERMS = ['KKH','1M','3M','6M','9M','12M','18M','24M','36M'];
 
-// ============ CHIẾN LƯỢC CHUNG: Đọc tất cả text trên trang ============
-async function extractAllRatesFromPage(page, bankCode) {
-  // Đợi trang load hoàn toàn
+// Mapping tên ngân hàng trên simplize.vn -> mã code trong DB
+const BANK_NAME_MAP = {
+  'agribank': 'AGR',
+  'bidv': 'BIDV',
+  'vietcombank': 'VCB',
+  'vietinbank': 'CTG',
+  'acb': 'ACB',
+  'techcombank': 'TCB',
+  'sacombank': 'STB',
+  'shb': 'SHB',
+  'vpbank': 'VPB',
+  'mbbank': 'MBB',
+  'mb': 'MBB',
+  'lpbank': 'LPB',
+  'lienvietpostbank': 'LPB',
+  'msb': 'MSB',
+  'eximbank': 'EIB',
+  'vib': 'VIB',
+  'abbank': 'ABB',
+  'hdbank': 'HDB',
+  'seabank': 'SSB',
+};
+
+// Mapping header cột trên simplize -> term code
+const COLUMN_MAP = {
+  'không kỳ hạn': 'KKH',
+  'kkh': 'KKH',
+  '1 tháng': '1M',
+  '3 tháng': '3M',
+  '6 tháng': '6M',
+  '9 tháng': '9M',
+  '12 tháng': '12M',
+  '13 tháng': '13M',
+  '18 tháng': '18M',
+  '24 tháng': '24M',
+  '36 tháng': '36M',
+};
+
+function parseRate(text) {
+  if (!text) return null;
+  const cleaned = text.replace(/%/g, '').replace(/,/g, '.').replace(/\s/g, '').replace(/\u00a0/g, '').replace(/−/g, '-');
+  if (!cleaned || cleaned === '-' || cleaned === '—' || cleaned === 'N/A') return null;
+  const num = parseFloat(cleaned);
+  return (isNaN(num) || num <= 0 || num > 20) ? null : Math.round(num * 100) / 100;
+}
+
+function matchBankCode(name) {
+  const lower = name.toLowerCase().replace(/\s+/g, '');
+  for (const [key, code] of Object.entries(BANK_NAME_MAP)) {
+    if (lower.includes(key)) return code;
+  }
+  return null;
+}
+
+// ============ NGUỒN CHÍNH: simplize.vn ============
+async function scrapeSimplize(page) {
+  log('📡 Truy cập simplize.vn...');
+  await page.goto('https://simplize.vn/lai-suat-ngan-hang', {
+    waitUntil: 'networkidle',
+    timeout: 30000,
+  });
+  
+  // Đợi bảng lãi suất xuất hiện
   await page.waitForTimeout(5000);
   
-  // Scroll xuống để trigger lazy loading
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForTimeout(2000);
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await page.waitForTimeout(1000);
-
-  // Chiến lược 1: Tìm trong tất cả bảng
-  let rates = await page.evaluate(() => {
-    const results = [];
-    const termPatterns = [
-      { pattern: /kh[oô]ng\s*k[yỳ]\s*h[aạ]n/i, code: 'KKH' },
-      { pattern: /^0?1\s*(th[aá]ng|t$|t\b)/i, code: '1M' },
-      { pattern: /^0?3\s*(th[aá]ng|t$|t\b)/i, code: '3M' },
-      { pattern: /^0?6\s*(th[aá]ng|t$|t\b)/i, code: '6M' },
-      { pattern: /^0?9\s*(th[aá]ng|t$|t\b)/i, code: '9M' },
-      { pattern: /^12\s*(th[aá]ng|t$|t\b)/i, code: '12M' },
-      { pattern: /^18\s*(th[aá]ng|t$|t\b)/i, code: '18M' },
-      { pattern: /^24\s*(th[aá]ng|t$|t\b)/i, code: '24M' },
-      { pattern: /^36\s*(th[aá]ng|t$|t\b)/i, code: '36M' },
-    ];
-
-    function matchTerm(text) {
-      const t = text.trim().replace(/\s+/g, ' ');
-      for (const { pattern, code } of termPatterns) {
-        if (pattern.test(t)) return code;
-      }
-      return null;
-    }
-
-    function tryParseRate(text) {
-      const c = text.replace(/%/g, '').replace(/,/g, '.').replace(/\s/g, '').replace(/\u00a0/g, '');
-      if (!c || c === '-' || c === '—') return null;
-      const n = parseFloat(c);
-      return (isNaN(n) || n <= 0 || n > 20) ? null : Math.round(n * 100) / 100;
-    }
-
-    // Scan all tables
-    document.querySelectorAll('table').forEach(table => {
+  // Scroll xuống để load bảng
+  await page.evaluate(() => {
+    window.scrollTo(0, 2000);
+  });
+  await page.waitForTimeout(3000);
+  
+  // Đọc dữ liệu bảng
+  const data = await page.evaluate(() => {
+    const results = {};
+    
+    // Tìm tất cả bảng trên trang
+    const tables = document.querySelectorAll('table');
+    
+    for (const table of tables) {
       const rows = table.querySelectorAll('tr');
-      rows.forEach(row => {
-        const cells = Array.from(row.querySelectorAll('td, th'));
-        if (cells.length < 2) return;
-        
-        const firstText = cells[0].textContent || '';
-        const term = matchTerm(firstText);
-        if (!term) return;
-
-        // Try to get rates from remaining cells
-        for (let i = 1; i < cells.length; i++) {
-          const rate = tryParseRate(cells[i].textContent || '');
-          if (rate !== null) {
-            const existing = results.find(r => r.term_code === term);
-            if (existing) {
-              if (rate < existing.rate_min) existing.rate_min = rate;
-              if (rate > existing.rate_max) existing.rate_max = rate;
-            } else {
-              results.push({ term_code: term, rate_min: rate, rate_max: rate });
-            }
-          }
-        }
-      });
-    });
-
-    // Chiến lược 2: Tìm trong div/span có cấu trúc lãi suất
-    if (results.length === 0) {
-      const allText = document.body.innerText;
-      const lines = allText.split('\n').map(l => l.trim()).filter(l => l);
+      if (rows.length < 3) continue; // Bỏ bảng quá nhỏ
       
-      for (let i = 0; i < lines.length; i++) {
-        const term = matchTerm(lines[i]);
-        if (!term) continue;
+      // Đọc header để xác định cột
+      let headers = [];
+      const headerRow = rows[0];
+      const headerCells = headerRow.querySelectorAll('th, td');
+      headerCells.forEach(cell => {
+        headers.push((cell.textContent || '').trim().toLowerCase());
+      });
+      
+      // Nếu header không chứa từ khóa liên quan lãi suất, bỏ qua
+      const hasRateHeaders = headers.some(h => 
+        h.includes('tháng') || h.includes('kỳ hạn') || h.includes('không kỳ')
+      );
+      if (!hasRateHeaders && headers.length < 5) continue;
+      
+      // Đọc từng dòng dữ liệu
+      for (let i = 1; i < rows.length; i++) {
+        const cells = rows[i].querySelectorAll('td, th');
+        if (cells.length < 3) continue;
         
-        // Tìm số liệu trong cùng dòng hoặc dòng kế
-        const searchText = lines[i] + ' ' + (lines[i + 1] || '');
-        const numbers = searchText.match(/\d+[.,]\d+/g);
-        if (numbers) {
-          for (const numStr of numbers) {
-            const rate = tryParseRate(numStr);
-            if (rate !== null) {
-              const existing = results.find(r => r.term_code === term);
-              if (existing) {
-                if (rate < existing.rate_min) existing.rate_min = rate;
-                if (rate > existing.rate_max) existing.rate_max = rate;
-              } else {
-                results.push({ term_code: term, rate_min: rate, rate_max: rate });
-              }
-            }
-          }
+        const bankName = (cells[0].textContent || '').trim();
+        if (!bankName || bankName.length < 2) continue;
+        
+        const bankRates = {};
+        for (let j = 1; j < cells.length && j < headers.length; j++) {
+          const rateText = (cells[j].textContent || '').trim();
+          bankRates[headers[j]] = rateText;
         }
+        
+        results[bankName] = bankRates;
       }
     }
-
+    
     return results;
   });
 
-  return rates.filter(r => VALID_TERMS.includes(r.term_code));
+  log(`📊 Đọc được ${Object.keys(data).length} ngân hàng từ simplize.vn`);
+  return data;
 }
 
-// ============ SCRAPER CHO TỪNG NGÂN HÀNG ============
+// ============ BACKUP: Techcombank blog ============
+async function scrapeTechcombankBlog(page) {
+  log('📡 [Backup] Truy cập techcombank.com blog...');
+  await page.goto('https://techcombank.com/thong-tin/blog/lai-suat-tiet-kiem', {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+  await page.waitForTimeout(5000);
+  
+  const data = await page.evaluate(() => {
+    const results = {};
+    const tables = document.querySelectorAll('table');
+    
+    for (const table of tables) {
+      const rows = table.querySelectorAll('tr');
+      if (rows.length < 5) continue;
+      
+      let headers = [];
+      const headerRow = rows[0];
+      headerRow.querySelectorAll('th, td').forEach(cell => {
+        headers.push((cell.textContent || '').trim().toLowerCase());
+      });
+      
+      for (let i = 1; i < rows.length; i++) {
+        const cells = rows[i].querySelectorAll('td, th');
+        if (cells.length < 3) continue;
+        
+        const bankName = (cells[0].textContent || '').trim();
+        if (!bankName || bankName.length < 2) continue;
+        
+        const bankRates = {};
+        for (let j = 1; j < cells.length && j < headers.length; j++) {
+          bankRates[headers[j]] = (cells[j].textContent || '').trim();
+        }
+        results[bankName] = bankRates;
+      }
+    }
+    return results;
+  });
 
-async function scrapeAGR(page) {
-  log('AGR', 'Truy cập Agribank...');
-  await page.goto('https://www.agribank.com.vn/vn/lai-suat', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  // Thử click tab tiết kiệm
-  for (const sel of ['text=Tiết kiệm', 'text=tiết kiệm', 'text=Tiền gửi', '[class*="tab"]']) {
-    const el = await page.$(sel).catch(() => null);
-    if (el) { await el.click().catch(() => {}); await page.waitForTimeout(3000); break; }
-  }
-  return await extractAllRatesFromPage(page, 'AGR');
+  log(`📊 [Backup] Đọc được ${Object.keys(data).length} ngân hàng từ Techcombank blog`);
+  return data;
 }
 
-async function scrapeBIDV(page) {
-  log('BIDV', 'Truy cập BIDV...');
-  await page.goto('https://www.bidv.com.vn/vn/tra-cuu-lai-suat', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  // BIDV thường có tab "Tiền gửi tiết kiệm"
-  for (const sel of ['text=Tiết kiệm', 'text=Tiền gửi tiết kiệm', 'text=Lãi suất tiền gửi']) {
-    const el = await page.$(sel).catch(() => null);
-    if (el) { await el.click().catch(() => {}); await page.waitForTimeout(3000); break; }
-  }
-  return await extractAllRatesFromPage(page, 'BIDV');
-}
+// ============ XỬ LÝ VÀ LƯU DỮ LIỆU ============
+async function processAndSave(rawData, reportDate) {
+  const results = [];
+  
+  // Lấy danh sách bank từ DB
+  const { data: banks } = await supabase.from('banks').select('id, code, name').eq('is_active', true);
+  if (!banks) { log('❌ Không đọc được danh sách ngân hàng từ DB'); return results; }
 
-async function scrapeVCB(page) {
-  log('VCB', 'Truy cập Vietcombank...');
-  // Thử URL chính trước, nếu lỗi thì thử URL backup
-  const urls = [
-    'https://vietcombank.com.vn/vi-VN/lai-suat/lai-suat-tien-gui',
-    'https://www.vietcombank.com.vn/vi-VN/Cong-cu-Tien-ich/Lai-suat',
-    'https://portal.vietcombank.com.vn/Personal/TK/Pages/lai-suat.aspx',
-  ];
-  for (const url of urls) {
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      const rates = await extractAllRatesFromPage(page, 'VCB');
-      if (rates.length > 0) return rates;
-    } catch (e) {
-      log('VCB', `URL ${url} thất bại, thử URL tiếp...`);
+  for (const [bankName, rates] of Object.entries(rawData)) {
+    const bankCode = matchBankCode(bankName);
+    if (!bankCode) continue;
+    
+    const bank = banks.find(b => b.code === bankCode);
+    if (!bank) continue;
+
+    const parsedRates = [];
+    
+    for (const [colHeader, rateText] of Object.entries(rates)) {
+      // Tìm term code từ header
+      let termCode = null;
+      const colLower = colHeader.toLowerCase();
+      
+      for (const [key, code] of Object.entries(COLUMN_MAP)) {
+        if (colLower.includes(key)) {
+          termCode = code;
+          break;
+        }
+      }
+      
+      // Fallback: thử match số + tháng
+      if (!termCode) {
+        const numMatch = colLower.match(/(\d+)\s*th/);
+        if (numMatch) {
+          const map = { '1': '1M', '3': '3M', '6': '6M', '9': '9M', '12': '12M', '13': '13M', '18': '18M', '24': '24M', '36': '36M' };
+          termCode = map[numMatch[1]] || null;
+        }
+      }
+      
+      if (!termCode || !VALID_TERMS.includes(termCode)) continue;
+      
+      const rate = parseRate(rateText);
+      if (rate === null) continue;
+      
+      parsedRates.push({ term_code: termCode, rate_min: rate, rate_max: rate });
+    }
+
+    if (parsedRates.length > 0) {
+      // Lưu vào DB
+      let saved = 0;
+      for (const rate of parsedRates) {
+        const { error } = await supabase.from('deposit_rates').upsert({
+          bank_id: bank.id,
+          report_date: reportDate,
+          customer_type: 'CN',
+          term_code: rate.term_code,
+          rate_min: rate.rate_min,
+          rate_max: rate.rate_max,
+          rate_type: 'standard',
+        }, { onConflict: 'bank_id,report_date,customer_type,term_code,rate_type' });
+        if (!error) saved++;
+      }
+
+      log(`✅ ${bank.name} (${bankCode}): ${parsedRates.length} kỳ hạn, lưu ${saved} bản ghi`);
+      parsedRates.forEach(r => log(`   ${r.term_code}: ${r.rate_min}%`));
+      results.push({ bank: bankCode, name: bank.name, success: true, rates: parsedRates.length, saved });
     }
   }
-  return [];
-}
 
-async function scrapeCTG(page) {
-  log('CTG', 'Truy cập VietinBank...');
-  const urls = [
-    'https://www.vietinbank.vn/lai-suat',
-    'https://www.vietinbank.vn/web/home/vn/lai-suat/lai-suat-huy-dong-von',
-  ];
-  for (const url of urls) {
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      const rates = await extractAllRatesFromPage(page, 'CTG');
-      if (rates.length > 0) return rates;
-    } catch (e) {
-      log('CTG', `URL thất bại, thử tiếp...`);
-    }
-  }
-  return [];
-}
-
-async function scrapeACB(page) {
-  log('ACB', 'Truy cập ACB...');
-  await page.goto('https://www.acb.com.vn/vn/interest', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  for (const sel of ['text=Tiền gửi', 'text=tiền gửi', 'text=Lãi suất tiết kiệm']) {
-    const el = await page.$(sel).catch(() => null);
-    if (el) { await el.click().catch(() => {}); await page.waitForTimeout(3000); break; }
-  }
-  return await extractAllRatesFromPage(page, 'ACB');
-}
-
-async function scrapeTCB(page) {
-  log('TCB', 'Truy cập Techcombank...');
-  await page.goto('https://techcombank.com/cong-cu-tien-ich/bieu-phi-lai-suat', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await page.waitForTimeout(6000); // TCB load chậm
-  for (const sel of ['text=Lãi suất tiền gửi', 'text=Tiền gửi', 'text=lãi suất huy động']) {
-    const el = await page.$(sel).catch(() => null);
-    if (el) { await el.click().catch(() => {}); await page.waitForTimeout(3000); break; }
-  }
-  return await extractAllRatesFromPage(page, 'TCB');
-}
-
-async function scrapeSTB(page) {
-  log('STB', 'Truy cập Sacombank...');
-  await page.goto('https://www.sacombank.com.vn/canhan/Pages/lai-suat.aspx', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  return await extractAllRatesFromPage(page, 'STB');
-}
-
-async function scrapeSHB(page) {
-  log('SHB', 'Truy cập SHB...');
-  await page.goto('https://www.shb.com.vn/lai-suat/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  return await extractAllRatesFromPage(page, 'SHB');
-}
-
-async function scrapeVPB(page) {
-  log('VPB', 'Truy cập VPBank...');
-  const urls = [
-    'https://www.vpbank.com.vn/tai-lieu-bieu-mau',
-    'https://www.vpbank.com.vn/cong-cu-tien-ich/lai-suat',
-  ];
-  for (const url of urls) {
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.waitForTimeout(5000);
-      for (const sel of ['text=Lãi suất', 'text=Biểu lãi suất']) {
-        const el = await page.$(sel).catch(() => null);
-        if (el) { await el.click().catch(() => {}); await page.waitForTimeout(3000); break; }
-      }
-      const rates = await extractAllRatesFromPage(page, 'VPB');
-      if (rates.length > 0) return rates;
-    } catch (e) { continue; }
-  }
-  return [];
-}
-
-async function scrapeMBB(page) {
-  log('MBB', 'Truy cập MBBank...');
-  const urls = [
-    'https://www.mbbank.com.vn/Fee',
-    'https://www.mbbank.com.vn/lai-suat',
-  ];
-  for (const url of urls) {
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.waitForTimeout(6000);
-      for (const sel of ['text=Lãi suất tiền gửi', 'text=Tiền gửi', 'text=Biểu lãi suất']) {
-        const el = await page.$(sel).catch(() => null);
-        if (el) { await el.click().catch(() => {}); await page.waitForTimeout(3000); break; }
-      }
-      const rates = await extractAllRatesFromPage(page, 'MBB');
-      if (rates.length > 0) return rates;
-    } catch (e) { continue; }
-  }
-  return [];
-}
-
-async function scrapeLPB(page) {
-  log('LPB', 'Truy cập LPBank...');
-  await page.goto('https://lienvietpostbank.com.vn/lai-suat', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  return await extractAllRatesFromPage(page, 'LPB');
-}
-
-async function scrapeMSB(page) {
-  log('MSB', 'Truy cập MSB...');
-  await page.goto('https://www.msb.com.vn/bieu-lai-suat', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  return await extractAllRatesFromPage(page, 'MSB');
-}
-
-async function scrapeEIB(page) {
-  log('EIB', 'Truy cập Eximbank...');
-  await page.goto('https://eximbank.com.vn/lai-suat', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  for (const sel of ['text=Tiền gửi', 'text=tiết kiệm', 'text=Huy động']) {
-    const el = await page.$(sel).catch(() => null);
-    if (el) { await el.click().catch(() => {}); await page.waitForTimeout(3000); break; }
-  }
-  return await extractAllRatesFromPage(page, 'EIB');
-}
-
-async function scrapeVIB(page) {
-  log('VIB', 'Truy cập VIB...');
-  const urls = [
-    'https://www.vib.com.vn/vn/product-landing/tai-khoan-ngan-hang/bieu-lai-suat-tiet-kiem-tai-quay',
-    'https://www.vib.com.vn/vn/lai-suat',
-  ];
-  for (const url of urls) {
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      const rates = await extractAllRatesFromPage(page, 'VIB');
-      if (rates.length > 0) return rates;
-    } catch (e) { continue; }
-  }
-  return [];
-}
-
-async function scrapeABB(page) {
-  log('ABB', 'Truy cập ABBank...');
-  await page.goto('https://www.abbank.vn/thong-tin/lai-suat', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  return await extractAllRatesFromPage(page, 'ABB');
-}
-
-async function scrapeHDB(page) {
-  log('HDB', 'Truy cập HDBank...');
-  await page.goto('https://hdbank.com.vn/vi/personal/cong-cu/interest-rate', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await page.waitForTimeout(4000);
-  for (const sel of ['text=Tiết kiệm', 'text=Tiền gửi']) {
-    const el = await page.$(sel).catch(() => null);
-    if (el) { await el.click().catch(() => {}); await page.waitForTimeout(3000); break; }
-  }
-  return await extractAllRatesFromPage(page, 'HDB');
-}
-
-async function scrapeSSB(page) {
-  log('SSB', 'Truy cập SeABank...');
-  await page.goto('https://www.seabank.com.vn/interest', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  return await extractAllRatesFromPage(page, 'SSB');
-}
-
-// ============ REGISTRY ============
-const SCRAPERS = {
-  'AGR':  { name: 'Agribank',     fn: scrapeAGR },
-  'BIDV': { name: 'BIDV',         fn: scrapeBIDV },
-  'VCB':  { name: 'Vietcombank',  fn: scrapeVCB },
-  'CTG':  { name: 'VietinBank',   fn: scrapeCTG },
-  'ACB':  { name: 'ACB',          fn: scrapeACB },
-  'TCB':  { name: 'Techcombank',  fn: scrapeTCB },
-  'STB':  { name: 'Sacombank',    fn: scrapeSTB },
-  'SHB':  { name: 'SHB',          fn: scrapeSHB },
-  'VPB':  { name: 'VPBank',       fn: scrapeVPB },
-  'MBB':  { name: 'MBBank',       fn: scrapeMBB },
-  'LPB':  { name: 'LPBank',       fn: scrapeLPB },
-  'MSB':  { name: 'MSB',          fn: scrapeMSB },
-  'EIB':  { name: 'Eximbank',     fn: scrapeEIB },
-  'VIB':  { name: 'VIB',          fn: scrapeVIB },
-  'ABB':  { name: 'ABBank',       fn: scrapeABB },
-  'HDB':  { name: 'HDBank',       fn: scrapeHDB },
-  'SSB':  { name: 'SeABank',      fn: scrapeSSB },
-};
-
-// ============ LƯU VÀO DATABASE ============
-async function saveRates(bankCode, rates, reportDate) {
-  const { data: bank } = await supabase.from('banks').select('id').eq('code', bankCode).single();
-  if (!bank) { log(bankCode, '⚠️ Không tìm thấy trong DB'); return 0; }
-
-  let saved = 0;
-  for (const rate of rates) {
-    if (!VALID_TERMS.includes(rate.term_code)) continue;
-    const { error } = await supabase.from('deposit_rates').upsert({
-      bank_id: bank.id, report_date: reportDate, customer_type: 'CN',
-      term_code: rate.term_code, rate_min: rate.rate_min, rate_max: rate.rate_max,
-      rate_type: 'standard',
-    }, { onConflict: 'bank_id,report_date,customer_type,term_code,rate_type' });
-    if (!error) saved++;
-  }
-  return saved;
-}
-
-// ============ CHỤP ẢNH DEBUG ============
-async function takeScreenshot(page, bankCode) {
-  try {
-    const path = `/tmp/screenshot-${bankCode}.png`;
-    await page.screenshot({ path, fullPage: true });
-    log(bankCode, `📸 Đã chụp ảnh debug: ${path}`);
-  } catch (e) {}
+  return results;
 }
 
 // ============ MAIN ============
@@ -393,79 +272,91 @@ async function main() {
   console.log(`🏦 THU THẬP LÃI SUẤT TỰ ĐỘNG - Ngày ${reportDate}`);
   console.log('='.repeat(60));
 
-  let bankCodes = Object.keys(SCRAPERS);
-  if (TARGET_BANK) {
-    bankCodes = TARGET_BANK.split(',').map(s => s.trim().toUpperCase()).filter(c => SCRAPERS[c]);
-    console.log(`🎯 Chỉ thu thập: ${bankCodes.join(', ')}`);
-  } else {
-    console.log(`🎯 Thu thập tất cả ${bankCodes.length} ngân hàng`);
-  }
-
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-           '--disable-web-security', '--ignore-certificate-errors'],
+           '--ignore-certificate-errors'],
   });
 
-  const results = [];
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    locale: 'vi-VN',
+    viewport: { width: 1366, height: 900 },
+    ignoreHTTPSErrors: true,
+  });
+  
+  const page = await context.newPage();
+  // Block heavy resources
+  await page.route('**/*.{png,jpg,jpeg,gif,svg,mp4,webm,woff,woff2}', route => route.abort());
 
-  for (const code of bankCodes) {
-    const scraper = SCRAPERS[code];
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-      locale: 'vi-VN',
-      viewport: { width: 1366, height: 900 },
-      ignoreHTTPSErrors: true,
-    });
-    const page = await context.newPage();
+  let allResults = [];
+
+  // === NGUỒN 1: simplize.vn ===
+  try {
+    const simplizeData = await scrapeSimplize(page);
+    const simplizeResults = await processAndSave(simplizeData, reportDate);
+    allResults = [...simplizeResults];
     
-    // Block heavy resources to speed up loading
-    await page.route('**/*.{png,jpg,jpeg,gif,svg,mp4,webm,woff,woff2}', route => route.abort());
+    if (simplizeResults.length > 0) {
+      log(`\n✅ Nguồn simplize.vn: Thu thập được ${simplizeResults.length} ngân hàng`);
+    }
+  } catch (err) {
+    log(`❌ Nguồn simplize.vn thất bại: ${err.message}`);
+  }
 
+  // Kiểm tra ngân hàng nào chưa có dữ liệu
+  const { data: dbBanks } = await supabase.from('banks').select('id, code, name').eq('is_active', true);
+  const missingBanks = (dbBanks || []).filter(b => !allResults.find(r => r.bank === b.code));
+
+  if (missingBanks.length > 0) {
+    log(`\n⚠️ Còn ${missingBanks.length} NH chưa có: ${missingBanks.map(b => b.code).join(', ')}`);
+    
+    // === NGUỒN 2 (Backup): Techcombank blog ===
     try {
-      const rates = await scraper.fn(page);
-
-      if (rates.length > 0) {
-        const saved = await saveRates(code, rates, reportDate);
-        log(code, `✅ ${scraper.name}: ${rates.length} kỳ hạn, lưu ${saved} bản ghi`);
-        rates.forEach(r => log(code, `   ${r.term_code}: ${r.rate_min} - ${r.rate_max}%`));
-        results.push({ bank: code, name: scraper.name, success: true, rates: rates.length, saved });
-      } else {
-        await takeScreenshot(page, code);
-        log(code, `⚠️ ${scraper.name}: Không tìm thấy dữ liệu`);
-        results.push({ bank: code, name: scraper.name, success: false, rates: 0, saved: 0 });
+      log('\n📡 Thử nguồn backup: Techcombank blog...');
+      const tcbData = await scrapeTechcombankBlog(page);
+      const tcbResults = await processAndSave(tcbData, reportDate);
+      
+      // Chỉ thêm NH mà simplize chưa có
+      for (const result of tcbResults) {
+        if (!allResults.find(r => r.bank === result.bank)) {
+          allResults.push(result);
+        }
+      }
+      
+      if (tcbResults.length > 0) {
+        log(`✅ Nguồn backup: Thêm ${tcbResults.length} ngân hàng`);
       }
     } catch (err) {
-      await takeScreenshot(page, code).catch(() => {});
-      log(code, `❌ ${scraper.name}: ${err.message}`);
-      results.push({ bank: code, name: scraper.name, success: false, rates: 0, saved: 0, error: err.message });
-    } finally {
-      await page.close().catch(() => {});
-      await context.close().catch(() => {});
+      log(`❌ Nguồn backup thất bại: ${err.message}`);
     }
   }
 
+  await page.close();
+  await context.close();
   await browser.close();
 
-  // TỔNG KẾT
+  // ============ TỔNG KẾT ============
   console.log('\n' + '='.repeat(60));
   console.log('📊 TỔNG KẾT');
   console.log('='.repeat(60));
-  
-  const ok = results.filter(r => r.success);
-  const fail = results.filter(r => !r.success);
-  
-  console.log(`✅ Thành công: ${ok.length}/${results.length}`);
+
+  const ok = allResults.filter(r => r.success);
+  const totalBanks = (dbBanks || []).length;
+  const missingFinal = (dbBanks || []).filter(b => !allResults.find(r => r.bank === b.code));
+
+  console.log(`✅ Thành công: ${ok.length}/${totalBanks} ngân hàng`);
   ok.forEach(r => console.log(`   ✅ ${r.name}: ${r.rates} kỳ hạn`));
-  if (fail.length > 0) {
-    console.log(`❌ Thất bại: ${fail.length}/${results.length}`);
-    fail.forEach(r => console.log(`   ❌ ${r.name}: ${r.error || 'Không tìm thấy dữ liệu'}`));
+  
+  if (missingFinal.length > 0) {
+    console.log(`⚠️ Chưa thu thập: ${missingFinal.length} ngân hàng`);
+    missingFinal.forEach(b => console.log(`   ⚠️ ${b.name}`));
   }
-  
+
   const totalSaved = ok.reduce((s, r) => s + r.saved, 0);
-  console.log(`\n📝 Tổng lưu: ${totalSaved} bản ghi`);
-  
-  // Không exit(1) nếu có ít nhất 1 bank thành công
+  console.log(`\n📝 Tổng lưu: ${totalSaved} bản ghi lãi suất`);
+  console.log('='.repeat(60));
+
   if (ok.length === 0) process.exit(1);
 }
 
