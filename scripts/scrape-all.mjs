@@ -1,281 +1,18 @@
 // =====================================================================
-// THU THẬP LÃI SUẤT TỰ ĐỘNG - TẤT CẢ NGÂN HÀNG (v3)
-// Nguồn: simplize.vn (trang tổng hợp lãi suất - 1 trang duy nhất)
-// Backup: website chính thức từng ngân hàng
+// CHẨN ĐOÁN: Khám phá cấu trúc dữ liệu cafef.vn
+// Script này KHÔNG lưu dữ liệu, chỉ in ra log để phân tích
 // =====================================================================
 
 import { chromium } from 'playwright';
-import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const TARGET_BANK = process.env.TARGET_BANK || '';
-
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('❌ Thiếu SUPABASE_URL hoặc SUPABASE_SERVICE_KEY');
-  process.exit(1);
-}
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-function todayVN() {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' });
-}
-
-function log(msg) {
-  const t = new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-  console.log(`[${t}] ${msg}`);
-}
-
-const VALID_TERMS = ['KKH','1M','3M','6M','9M','12M','18M','24M','36M'];
-
-// Mapping tên ngân hàng trên simplize.vn -> mã code trong DB
-const BANK_NAME_MAP = {
-  'agribank': 'AGR',
-  'bidv': 'BIDV',
-  'vietcombank': 'VCB',
-  'vietinbank': 'CTG',
-  'acb': 'ACB',
-  'techcombank': 'TCB',
-  'sacombank': 'STB',
-  'shb': 'SHB',
-  'vpbank': 'VPB',
-  'mbbank': 'MBB',
-  'mb': 'MBB',
-  'lpbank': 'LPB',
-  'lienvietpostbank': 'LPB',
-  'msb': 'MSB',
-  'eximbank': 'EIB',
-  'vib': 'VIB',
-  'abbank': 'ABB',
-  'hdbank': 'HDB',
-  'seabank': 'SSB',
-};
-
-// Mapping header cột trên simplize -> term code
-const COLUMN_MAP = {
-  'không kỳ hạn': 'KKH',
-  'kkh': 'KKH',
-  '1 tháng': '1M',
-  '3 tháng': '3M',
-  '6 tháng': '6M',
-  '9 tháng': '9M',
-  '12 tháng': '12M',
-  '13 tháng': '13M',
-  '18 tháng': '18M',
-  '24 tháng': '24M',
-  '36 tháng': '36M',
-};
-
-function parseRate(text) {
-  if (!text) return null;
-  const cleaned = text.replace(/%/g, '').replace(/,/g, '.').replace(/\s/g, '').replace(/\u00a0/g, '').replace(/−/g, '-');
-  if (!cleaned || cleaned === '-' || cleaned === '—' || cleaned === 'N/A') return null;
-  const num = parseFloat(cleaned);
-  return (isNaN(num) || num <= 0 || num > 20) ? null : Math.round(num * 100) / 100;
-}
-
-function matchBankCode(name) {
-  const lower = name.toLowerCase().replace(/\s+/g, '');
-  for (const [key, code] of Object.entries(BANK_NAME_MAP)) {
-    if (lower.includes(key)) return code;
-  }
-  return null;
-}
-
-// ============ NGUỒN CHÍNH: simplize.vn ============
-async function scrapeSimplize(page) {
-  log('📡 Truy cập simplize.vn...');
-  await page.goto('https://simplize.vn/lai-suat-ngan-hang', {
-    waitUntil: 'networkidle',
-    timeout: 30000,
-  });
-  
-  // Đợi bảng lãi suất xuất hiện
-  await page.waitForTimeout(5000);
-  
-  // Scroll xuống để load bảng
-  await page.evaluate(() => {
-    window.scrollTo(0, 2000);
-  });
-  await page.waitForTimeout(3000);
-  
-  // Đọc dữ liệu bảng
-  const data = await page.evaluate(() => {
-    const results = {};
-    
-    // Tìm tất cả bảng trên trang
-    const tables = document.querySelectorAll('table');
-    
-    for (const table of tables) {
-      const rows = table.querySelectorAll('tr');
-      if (rows.length < 3) continue; // Bỏ bảng quá nhỏ
-      
-      // Đọc header để xác định cột
-      let headers = [];
-      const headerRow = rows[0];
-      const headerCells = headerRow.querySelectorAll('th, td');
-      headerCells.forEach(cell => {
-        headers.push((cell.textContent || '').trim().toLowerCase());
-      });
-      
-      // Nếu header không chứa từ khóa liên quan lãi suất, bỏ qua
-      const hasRateHeaders = headers.some(h => 
-        h.includes('tháng') || h.includes('kỳ hạn') || h.includes('không kỳ')
-      );
-      if (!hasRateHeaders && headers.length < 5) continue;
-      
-      // Đọc từng dòng dữ liệu
-      for (let i = 1; i < rows.length; i++) {
-        const cells = rows[i].querySelectorAll('td, th');
-        if (cells.length < 3) continue;
-        
-        const bankName = (cells[0].textContent || '').trim();
-        if (!bankName || bankName.length < 2) continue;
-        
-        const bankRates = {};
-        for (let j = 1; j < cells.length && j < headers.length; j++) {
-          const rateText = (cells[j].textContent || '').trim();
-          bankRates[headers[j]] = rateText;
-        }
-        
-        results[bankName] = bankRates;
-      }
-    }
-    
-    return results;
-  });
-
-  log(`📊 Đọc được ${Object.keys(data).length} ngân hàng từ simplize.vn`);
-  return data;
-}
-
-// ============ BACKUP: Techcombank blog ============
-async function scrapeTechcombankBlog(page) {
-  log('📡 [Backup] Truy cập techcombank.com blog...');
-  await page.goto('https://techcombank.com/thong-tin/blog/lai-suat-tiet-kiem', {
-    waitUntil: 'domcontentloaded',
-    timeout: 30000,
-  });
-  await page.waitForTimeout(5000);
-  
-  const data = await page.evaluate(() => {
-    const results = {};
-    const tables = document.querySelectorAll('table');
-    
-    for (const table of tables) {
-      const rows = table.querySelectorAll('tr');
-      if (rows.length < 5) continue;
-      
-      let headers = [];
-      const headerRow = rows[0];
-      headerRow.querySelectorAll('th, td').forEach(cell => {
-        headers.push((cell.textContent || '').trim().toLowerCase());
-      });
-      
-      for (let i = 1; i < rows.length; i++) {
-        const cells = rows[i].querySelectorAll('td, th');
-        if (cells.length < 3) continue;
-        
-        const bankName = (cells[0].textContent || '').trim();
-        if (!bankName || bankName.length < 2) continue;
-        
-        const bankRates = {};
-        for (let j = 1; j < cells.length && j < headers.length; j++) {
-          bankRates[headers[j]] = (cells[j].textContent || '').trim();
-        }
-        results[bankName] = bankRates;
-      }
-    }
-    return results;
-  });
-
-  log(`📊 [Backup] Đọc được ${Object.keys(data).length} ngân hàng từ Techcombank blog`);
-  return data;
-}
-
-// ============ XỬ LÝ VÀ LƯU DỮ LIỆU ============
-async function processAndSave(rawData, reportDate) {
-  const results = [];
-  
-  // Lấy danh sách bank từ DB
-  const { data: banks } = await supabase.from('banks').select('id, code, name').eq('is_active', true);
-  if (!banks) { log('❌ Không đọc được danh sách ngân hàng từ DB'); return results; }
-
-  for (const [bankName, rates] of Object.entries(rawData)) {
-    const bankCode = matchBankCode(bankName);
-    if (!bankCode) continue;
-    
-    const bank = banks.find(b => b.code === bankCode);
-    if (!bank) continue;
-
-    const parsedRates = [];
-    
-    for (const [colHeader, rateText] of Object.entries(rates)) {
-      // Tìm term code từ header
-      let termCode = null;
-      const colLower = colHeader.toLowerCase();
-      
-      for (const [key, code] of Object.entries(COLUMN_MAP)) {
-        if (colLower.includes(key)) {
-          termCode = code;
-          break;
-        }
-      }
-      
-      // Fallback: thử match số + tháng
-      if (!termCode) {
-        const numMatch = colLower.match(/(\d+)\s*th/);
-        if (numMatch) {
-          const map = { '1': '1M', '3': '3M', '6': '6M', '9': '9M', '12': '12M', '13': '13M', '18': '18M', '24': '24M', '36': '36M' };
-          termCode = map[numMatch[1]] || null;
-        }
-      }
-      
-      if (!termCode || !VALID_TERMS.includes(termCode)) continue;
-      
-      const rate = parseRate(rateText);
-      if (rate === null) continue;
-      
-      parsedRates.push({ term_code: termCode, rate_min: rate, rate_max: rate });
-    }
-
-    if (parsedRates.length > 0) {
-      // Lưu vào DB
-      let saved = 0;
-      for (const rate of parsedRates) {
-        const { error } = await supabase.from('deposit_rates').upsert({
-          bank_id: bank.id,
-          report_date: reportDate,
-          customer_type: 'CN',
-          term_code: rate.term_code,
-          rate_min: rate.rate_min,
-          rate_max: rate.rate_max,
-          rate_type: 'standard',
-        }, { onConflict: 'bank_id,report_date,customer_type,term_code,rate_type' });
-        if (!error) saved++;
-      }
-
-      log(`✅ ${bank.name} (${bankCode}): ${parsedRates.length} kỳ hạn, lưu ${saved} bản ghi`);
-      parsedRates.forEach(r => log(`   ${r.term_code}: ${r.rate_min}%`));
-      results.push({ bank: bankCode, name: bank.name, success: true, rates: parsedRates.length, saved });
-    }
-  }
-
-  return results;
-}
-
-// ============ MAIN ============
 async function main() {
-  const reportDate = todayVN();
   console.log('='.repeat(60));
-  console.log(`🏦 THU THẬP LÃI SUẤT TỰ ĐỘNG - Ngày ${reportDate}`);
+  console.log('🔍 CHẨN ĐOÁN CẤU TRÚC CAFEF.VN');
   console.log('='.repeat(60));
 
   const browser = await chromium.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-           '--ignore-certificate-errors'],
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
 
   const context = await browser.newContext({
@@ -284,80 +21,186 @@ async function main() {
     viewport: { width: 1366, height: 900 },
     ignoreHTTPSErrors: true,
   });
-  
+
   const page = await context.newPage();
-  // Block heavy resources
-  await page.route('**/*.{png,jpg,jpeg,gif,svg,mp4,webm,woff,woff2}', route => route.abort());
 
-  let allResults = [];
+  // ============ BẮT TẤT CẢ NETWORK REQUESTS ============
+  const apiCalls = [];
 
-  // === NGUỒN 1: simplize.vn ===
-  try {
-    const simplizeData = await scrapeSimplize(page);
-    const simplizeResults = await processAndSave(simplizeData, reportDate);
-    allResults = [...simplizeResults];
-    
-    if (simplizeResults.length > 0) {
-      log(`\n✅ Nguồn simplize.vn: Thu thập được ${simplizeResults.length} ngân hàng`);
-    }
-  } catch (err) {
-    log(`❌ Nguồn simplize.vn thất bại: ${err.message}`);
-  }
+  page.on('response', async (response) => {
+    const url = response.url();
+    const status = response.status();
 
-  // Kiểm tra ngân hàng nào chưa có dữ liệu
-  const { data: dbBanks } = await supabase.from('banks').select('id, code, name').eq('is_active', true);
-  const missingBanks = (dbBanks || []).filter(b => !allResults.find(r => r.bank === b.code));
+    // Chỉ quan tâm đến API calls (JSON, XHR)
+    const contentType = (await response.headerValue('content-type')) || '';
+    const isAPI = contentType.includes('json') || contentType.includes('xml') ||
+                  url.includes('/api/') || url.includes('ajax') || url.includes('servlet') ||
+                  url.includes('interest') || url.includes('lai-suat') || url.includes('rate');
 
-  if (missingBanks.length > 0) {
-    log(`\n⚠️ Còn ${missingBanks.length} NH chưa có: ${missingBanks.map(b => b.code).join(', ')}`);
-    
-    // === NGUỒN 2 (Backup): Techcombank blog ===
-    try {
-      log('\n📡 Thử nguồn backup: Techcombank blog...');
-      const tcbData = await scrapeTechcombankBlog(page);
-      const tcbResults = await processAndSave(tcbData, reportDate);
-      
-      // Chỉ thêm NH mà simplize chưa có
-      for (const result of tcbResults) {
-        if (!allResults.find(r => r.bank === result.bank)) {
-          allResults.push(result);
-        }
+    if (isAPI && status === 200) {
+      let bodyPreview = '';
+      try {
+        const body = await response.text();
+        bodyPreview = body.substring(0, 500);
+        apiCalls.push({ url, contentType, bodyLength: body.length, bodyPreview });
+      } catch (e) {
+        apiCalls.push({ url, contentType, bodyLength: 0, bodyPreview: 'Cannot read body' });
       }
-      
-      if (tcbResults.length > 0) {
-        log(`✅ Nguồn backup: Thêm ${tcbResults.length} ngân hàng`);
-      }
-    } catch (err) {
-      log(`❌ Nguồn backup thất bại: ${err.message}`);
     }
+  });
+
+  // ============ MỞ TRANG CAFEF ============
+  console.log('\n📡 Truy cập cafef.vn/du-lieu/lai-suat-ngan-hang.chn...');
+  await page.goto('https://cafef.vn/du-lieu/lai-suat-ngan-hang.chn', {
+    waitUntil: 'networkidle',
+    timeout: 45000,
+  });
+  console.log('✅ Trang đã load xong (networkidle)');
+
+  // Đợi thêm cho JS render
+  await page.waitForTimeout(8000);
+
+  // Scroll xuống để trigger lazy load
+  console.log('📜 Scroll trang...');
+  for (let i = 0; i < 5; i++) {
+    await page.evaluate((y) => window.scrollTo(0, y), i * 800);
+    await page.waitForTimeout(1000);
   }
+  await page.waitForTimeout(3000);
 
-  await page.close();
-  await context.close();
-  await browser.close();
-
-  // ============ TỔNG KẾT ============
+  // ============ IN KẾT QUẢ API CALLS ============
   console.log('\n' + '='.repeat(60));
-  console.log('📊 TỔNG KẾT');
+  console.log(`📋 TÌM THẤY ${apiCalls.length} API CALLS`);
   console.log('='.repeat(60));
 
-  const ok = allResults.filter(r => r.success);
-  const totalBanks = (dbBanks || []).length;
-  const missingFinal = (dbBanks || []).filter(b => !allResults.find(r => r.bank === b.code));
+  apiCalls.forEach((call, i) => {
+    console.log(`\n--- API Call #${i + 1} ---`);
+    console.log(`URL: ${call.url}`);
+    console.log(`Content-Type: ${call.contentType}`);
+    console.log(`Body Length: ${call.bodyLength} chars`);
+    console.log(`Preview: ${call.bodyPreview}`);
+  });
 
-  console.log(`✅ Thành công: ${ok.length}/${totalBanks} ngân hàng`);
-  ok.forEach(r => console.log(`   ✅ ${r.name}: ${r.rates} kỳ hạn`));
-  
-  if (missingFinal.length > 0) {
-    console.log(`⚠️ Chưa thu thập: ${missingFinal.length} ngân hàng`);
-    missingFinal.forEach(b => console.log(`   ⚠️ ${b.name}`));
+  // ============ PHÂN TÍCH HTML CỦA TRANG ============
+  console.log('\n' + '='.repeat(60));
+  console.log('📋 PHÂN TÍCH HTML');
+  console.log('='.repeat(60));
+
+  const analysis = await page.evaluate(() => {
+    const result = {};
+
+    // Đếm bảng
+    const tables = document.querySelectorAll('table');
+    result.tableCount = tables.length;
+    result.tables = [];
+    tables.forEach((t, i) => {
+      const rows = t.querySelectorAll('tr');
+      const cells = rows[0] ? Array.from(rows[0].querySelectorAll('th, td')).map(c => c.textContent.trim()) : [];
+      result.tables.push({
+        index: i,
+        rows: rows.length,
+        headerCells: cells.slice(0, 10),
+        className: t.className,
+        parentClass: t.parentElement ? t.parentElement.className : '',
+      });
+    });
+
+    // Tìm iframes (cafef có thể load data trong iframe)
+    const iframes = document.querySelectorAll('iframe');
+    result.iframeCount = iframes.length;
+    result.iframes = [];
+    iframes.forEach((f, i) => {
+      result.iframes.push({ index: i, src: f.src, id: f.id, className: f.className });
+    });
+
+    // Tìm các select/dropdown (kỳ hạn)
+    const selects = document.querySelectorAll('select');
+    result.selectCount = selects.length;
+    result.selects = [];
+    selects.forEach((s, i) => {
+      const options = Array.from(s.querySelectorAll('option')).map(o => ({ value: o.value, text: o.textContent.trim() }));
+      result.selects.push({ index: i, id: s.id, name: s.name, className: s.className, options: options.slice(0, 15) });
+    });
+
+    // Tìm text có chứa "lãi suất" hoặc "%"
+    const allText = document.body.innerText;
+    const lines = allText.split('\n').filter(l => l.includes('%') || l.toLowerCase().includes('lãi suất') || l.toLowerCase().includes('tháng'));
+    result.rateLines = lines.slice(0, 30);
+
+    // Tìm data attributes
+    const dataElements = document.querySelectorAll('[data-url], [data-api], [data-src], [ng-src], [data-bind]');
+    result.dataElements = [];
+    dataElements.forEach((el, i) => {
+      if (i < 10) {
+        const attrs = {};
+        for (const attr of el.attributes) {
+          if (attr.name.startsWith('data-') || attr.name.startsWith('ng-')) {
+            attrs[attr.name] = attr.value.substring(0, 200);
+          }
+        }
+        result.dataElements.push({ tag: el.tagName, attrs });
+      }
+    });
+
+    return result;
+  });
+
+  console.log(`\nBảng (tables): ${analysis.tableCount}`);
+  analysis.tables.forEach(t => {
+    console.log(`  Table #${t.index}: ${t.rows} rows, class="${t.className}", parent="${t.parentClass}"`);
+    console.log(`    Headers: ${JSON.stringify(t.headerCells)}`);
+  });
+
+  console.log(`\nIframes: ${analysis.iframeCount}`);
+  analysis.iframes.forEach(f => {
+    console.log(`  Iframe #${f.index}: src="${f.src}", id="${f.id}"`);
+  });
+
+  console.log(`\nSelect/Dropdown: ${analysis.selectCount}`);
+  analysis.selects.forEach(s => {
+    console.log(`  Select #${s.index}: id="${s.id}", name="${s.name}", class="${s.className}"`);
+    console.log(`    Options: ${JSON.stringify(s.options)}`);
+  });
+
+  console.log(`\nDòng chứa lãi suất (${analysis.rateLines.length}):`);
+  analysis.rateLines.forEach(l => console.log(`  "${l.trim().substring(0, 150)}"`));
+
+  console.log(`\nData elements: ${analysis.dataElements.length}`);
+  analysis.dataElements.forEach(d => console.log(`  ${d.tag}: ${JSON.stringify(d.attrs)}`));
+
+  // ============ THỬ TÌM API ENDPOINT ============
+  console.log('\n' + '='.repeat(60));
+  console.log('🔍 THỬ GỌI CÁC API PHỔ BIẾN CỦA CAFEF');
+  console.log('='.repeat(60));
+
+  const possibleAPIs = [
+    'https://cafef.vn/du-lieu/ajax/lai-suat-ngan-hang.chn',
+    'https://cafef.vn/api/interest-rate',
+    'https://cafef.vn/du-lieu/InterestRate.ashx',
+    'https://api.cafef.vn/interest-rate',
+    'https://cafef.vn/du-lieu/lai-suat-ngan-hang-ajax.chn',
+  ];
+
+  for (const apiUrl of possibleAPIs) {
+    try {
+      const resp = await page.evaluate(async (url) => {
+        try {
+          const r = await fetch(url);
+          const text = await r.text();
+          return { status: r.status, length: text.length, preview: text.substring(0, 300) };
+        } catch (e) {
+          return { error: e.message };
+        }
+      }, apiUrl);
+      console.log(`\n${apiUrl}:`);
+      console.log(`  ${JSON.stringify(resp)}`);
+    } catch (e) {
+      console.log(`\n${apiUrl}: Error - ${e.message}`);
+    }
   }
 
-  const totalSaved = ok.reduce((s, r) => s + r.saved, 0);
-  console.log(`\n📝 Tổng lưu: ${totalSaved} bản ghi lãi suất`);
-  console.log('='.repeat(60));
-
-  if (ok.length === 0) process.exit(1);
+  await browser.close();
+  console.log('\n✅ Chẩn đoán hoàn tất');
 }
 
 main().catch(err => { console.error('💥', err); process.exit(1); });
