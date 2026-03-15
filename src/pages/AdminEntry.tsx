@@ -97,7 +97,7 @@ function DepositRateForm({ banks, saving, setSaving }: { banks: Bank[]; saving: 
       if (records.length === 0) { toast.error('Vui lòng nhập ít nhất 1 kỳ hạn'); setSaving(false); return; }
 
       const { error } = await supabase.from('deposit_rates').upsert(records, {
-        onConflict: 'bank_id,report_date,customer_type,term_code,rate_type',
+        onConflict: 'bank_id,report_date,customer_type,term_code,rate_type,channel',
       });
       if (error) throw error;
       toast.success(`Đã lưu ${records.length} mức lãi suất!`);
