@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { Bank, TERM_CODES } from '../lib/types';
 import { todayISO, getCurrentMonth, formatDate } from '../lib/utils';
-import { Save, Landmark, TrendingUp, FileText, CheckCircle, Zap, Loader2, CheckCircle2, XCircle, RefreshCw } from 'lucide-react';
+import { Save, Landmark, TrendingUp, FileText, CircleCheck as CheckCircle, Zap, Loader as Loader2, CircleCheck as CheckCircle2, Circle as XCircle, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 type FormTab = 'scrape' | 'deposit' | 'lending_avg' | 'lending_product' | 'weekly';
@@ -58,6 +58,12 @@ function DepositRateForm({ banks, saving, setSaving }: { banks: Bank[]; saving: 
   const [date, setDate] = useState(todayISO());
   const [bankId, setBankId] = useState<number>(0);
   const [customerType, setCustomerType] = useState<'CN' | 'TCKT'>('CN');
+  const [rateType, setRateType] = useState<'standard' | 'policy' | 'online' | 'vip' | 'promotional'>('standard');
+  const [productName, setProductName] = useState('');
+  const [channel, setChannel] = useState<'counter' | 'online'>('counter');
+  const [minDeposit, setMinDeposit] = useState('');
+  const [effectiveDate, setEffectiveDate] = useState('');
+  const [isPromotional, setIsPromotional] = useState(false);
   const [rates, setRates] = useState<Record<string, { min: string; max: string }>>({});
 
   useEffect(() => {
@@ -79,7 +85,13 @@ function DepositRateForm({ banks, saving, setSaving }: { banks: Bank[]; saving: 
           term_code: t,
           rate_min: rates[t].min ? parseFloat(rates[t].min.replace(',', '.')) : null,
           rate_max: rates[t].max ? parseFloat(rates[t].max.replace(',', '.')) : null,
-          rate_type: 'standard',
+          rate_type: rateType,
+          source: rateType === 'standard' ? 'cafef' : 'manual',
+          product_name: rateType === 'standard' ? null : (productName || null),
+          channel: channel,
+          min_deposit: minDeposit ? parseInt(minDeposit) : null,
+          is_promotional: isPromotional,
+          effective_date: effectiveDate || null,
         }));
 
       if (records.length === 0) { toast.error('Vui lòng nhập ít nhất 1 kỳ hạn'); setSaving(false); return; }
@@ -89,16 +101,21 @@ function DepositRateForm({ banks, saving, setSaving }: { banks: Bank[]; saving: 
       });
       if (error) throw error;
       toast.success(`Đã lưu ${records.length} mức lãi suất!`);
-      // Reset rates
       const init: Record<string, { min: string; max: string }> = {};
       TERM_CODES.forEach(t => { init[t] = { min: '', max: '' }; });
       setRates(init);
+      setProductName('');
+      setMinDeposit('');
+      setEffectiveDate('');
+      setIsPromotional(false);
     } catch (err: any) {
       toast.error('Lỗi: ' + (err.message || 'Không thể lưu'));
     } finally {
       setSaving(false);
     }
   }
+
+  const showAdditionalFields = rateType !== 'standard';
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
@@ -127,6 +144,64 @@ function DepositRateForm({ banks, saving, setSaving }: { banks: Bank[]; saving: 
           </select>
         </div>
       </div>
+
+      <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+        <label className="block text-xs font-medium text-gray-600 mb-3">Loại lãi suất *</label>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+          {[
+            { value: 'standard', label: 'Niêm yết thông thường' },
+            { value: 'policy', label: 'Theo chính sách sản phẩm' },
+            { value: 'online', label: 'Gửi online' },
+            { value: 'vip', label: 'VIP/Ưu tiên' },
+            { value: 'promotional', label: 'Khuyến mại' }
+          ].map(opt => (
+            <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="rateType" value={opt.value} checked={rateType === opt.value}
+                onChange={e => setRateType(e.target.value as any)}
+                className="w-4 h-4" />
+              <span className="text-xs">{opt.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {showAdditionalFields && (
+        <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+          <h4 className="text-sm font-medium text-[#1e3a5f] mb-4">Thông tin bổ sung</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Tên chương trình/sản phẩm</label>
+              <input type="text" value={productName} onChange={e => setProductName(e.target.value)}
+                placeholder="VD: Gửi Online Plus"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-300 outline-none" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Kênh gửi</label>
+              <select value={channel} onChange={e => setChannel(e.target.value as 'counter' | 'online')}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-300 outline-none">
+                <option value="counter">Tại quầy</option>
+                <option value="online">Online</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Số tiền gửi tối thiểu (triệu đồng)</label>
+              <input type="number" value={minDeposit} onChange={e => setMinDeposit(e.target.value)}
+                placeholder="VD: 100"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-300 outline-none" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Ngày hiệu lực</label>
+              <input type="date" value={effectiveDate} onChange={e => setEffectiveDate(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-300 outline-none" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <input type="checkbox" id="isPromo" checked={isPromotional} onChange={e => setIsPromotional(e.target.checked)}
+              className="w-4 h-4" />
+            <label htmlFor="isPromo" className="text-xs font-medium text-gray-600">Là lãi suất khuyến mại</label>
+          </div>
+        </div>
+      )}
 
       <div className="overflow-x-auto mb-4">
         <table className="w-full text-sm">

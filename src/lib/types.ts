@@ -17,7 +17,13 @@ export interface DepositRate {
   term_code: string;
   rate_min: number | null;
   rate_max: number | null;
-  rate_type: string;
+  rate_type: 'standard' | 'policy' | 'online' | 'vip' | 'promotional';
+  source: 'cafef' | 'manual';
+  product_name: string | null;
+  channel: 'counter' | 'online';
+  min_deposit: number | null;
+  is_promotional: boolean;
+  effective_date: string | null;
   note: string | null;
 }
 
