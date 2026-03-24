@@ -64,8 +64,12 @@ const NAME_TO_CODE = {
   'vietinbank': 'CTG',
   'acb': 'ACB',
   'techcombank': 'TCB',
+  'tcb': 'TCB',
+  'ngan hang ky thuong': 'TCB',
   'sacombank': 'STB',
   'shb': 'SHB',
+  'sai gon ha noi': 'SHB',
+  'saigon hanoi': 'SHB',
   'vpbank': 'VPB',
   'mb bank': 'MBB',
   'mbbank': 'MBB',
@@ -78,6 +82,8 @@ const NAME_TO_CODE = {
   'ab bank': 'ABB',
   'hdbank': 'HDB',
   'hd bank': 'HDB',
+  'ho chi minh': 'HDB',
+  'phat trien tp': 'HDB',
   'seabank': 'SSB',
   'sea bank': 'SSB',
 };
@@ -166,7 +172,10 @@ async function main() {
     const rates = bankData.interestRates || [];
 
     const bankCode = matchBankCode(symbol, name);
-    if (!bankCode) continue;
+    if (!bankCode) {
+      log("?? Khong match: symbol=" + symbol + " name=" + name);
+      continue;
+    }
 
     const dbBank = banks.find(b => b.code === bankCode);
     if (!dbBank) continue;
@@ -202,7 +211,9 @@ async function main() {
         rate_min: rate.rate_min,
         rate_max: rate.rate_max,
         rate_type: 'standard',
-      }, { onConflict: 'bank_id,report_date,customer_type,term_code,rate_type' });
+        channel: 'counter',
+        source: 'cafef',
+      }, { onConflict: 'bank_id,report_date,customer_type,term_code,rate_type,channel' });
 
       if (!error) saved++;
       else log('   Loi luu ' + bankCode + '/' + rate.term_code + ': ' + error.message);
