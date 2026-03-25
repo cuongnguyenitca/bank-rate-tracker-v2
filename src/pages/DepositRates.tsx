@@ -4,8 +4,9 @@ import { Bank, GROUP_LABELS } from '../lib/types';
 import { formatDate, todayISO } from '../lib/utils';
 import { VALID_TERMS, TERM_SHORT } from '../lib/termMapping';
 import { TableSkeleton } from '../components/Skeleton';
-import { Download, AlertCircle, Info, ChevronDown, ChevronUp, Clock } from 'lucide-react';
+import { Download, AlertCircle, Info, ChevronDown, ChevronUp, Clock, FileText, FileDown } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { exportDepositRatesPDF, exportDepositRatesWord } from '../lib/exportReports';
 
 // Types
 interface DepositRateRow {
@@ -237,6 +238,12 @@ export default function DepositRates() {
             </button>
             <button onClick={exportExcel} className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-emerald-700 transition-colors">
               <Download size={16} /> Xuất Excel
+            </button>
+            <button onClick={() => { exportDepositRatesPDF(banks, getCellData, selectedDate); toast.success("Dang xuat PDF..."); }} className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-red-700 transition-colors">
+              <FileDown size={16} /> PDF
+            </button>
+            <button onClick={() => { exportDepositRatesWord(banks, getCellData, selectedDate); toast.success("Dang xuat Word..."); }} className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700 transition-colors">
+              <FileText size={16} /> Word
             </button>
           </div>
         </div>
