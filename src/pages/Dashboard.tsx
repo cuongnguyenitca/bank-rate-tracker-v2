@@ -6,6 +6,7 @@ import { VALID_TERMS, TERM_SHORT } from '../lib/termMapping';
 import { runDataQualityChecks } from '../lib/dataQuality';
 import type { DataAlert } from '../lib/dataQuality';
 import { CardSkeleton, TableSkeleton } from '../components/Skeleton';
+import RateChangeLog from '../components/RateChangeLog';
 import { Landmark, Building2, CalendarDays, AlertCircle, AlertTriangle, CheckCircle, Info, Shield, RefreshCw } from 'lucide-react';
 
 export default function Dashboard() {
@@ -218,6 +219,9 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* Rate change log */}
+      <RateChangeLog />
     </div>
   );
 }
