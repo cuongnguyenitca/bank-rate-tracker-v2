@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
-import { LayoutDashboard, Landmark, TrendingUp, FileText, Settings, Menu, Building2, LogOut } from 'lucide-react';
+import ChangePassword from './ChangePassword';
+import { LayoutDashboard, Landmark, TrendingUp, FileText, Settings, Menu, Building2, LogOut, Key } from 'lucide-react';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -13,6 +14,7 @@ const navItems = [
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const { user, signOut } = useAuth();
   const today = new Date().toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
 
@@ -57,13 +59,20 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* User info & logout */}
+        {/* User info & actions */}
         <div className="p-3 border-t border-white/20">
           {user && (
             <div className="mb-2 px-3">
               <p className="text-xs text-blue-200 truncate">{user.email}</p>
             </div>
           )}
+          <button
+            onClick={() => setShowChangePassword(true)}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-blue-200 hover:bg-white/10 w-full transition-colors"
+          >
+            <Key size={18} />
+            Đổi mật khẩu
+          </button>
           <button
             onClick={signOut}
             className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-red-300 hover:bg-white/10 w-full transition-colors"
@@ -89,6 +98,11 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Change password modal */}
+      {showChangePassword && (
+        <ChangePassword onClose={() => setShowChangePassword(false)} />
+      )}
     </div>
   );
 }
